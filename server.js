@@ -155,10 +155,14 @@ app.post('/webhook', async (req, res) => {
 // 3. SUCCESS PAGE
 // ==========================================
 app.get('/success', async (req, res) => {
-    const orderId = req.cookies.my_order_id;
+    let orderId = req.cookies.my_order_id || req.query.order_id || '';
 
     if (!orderId) {
         return res.send("<div style='background:#0f1319; color:#fff; text-align:center; padding:50px; font-family:sans-serif; height:100vh;'><h2>❌ Invalid Access</h2></div>");
+    }
+
+    if (!req.cookies.my_order_id) {
+        res.cookie('my_order_id', orderId, { maxAge: 900000, httpOnly: true });
     }
 
     let cardKey = "WAITING";
@@ -364,4 +368,4 @@ function renderSuccessHtml(orderId, cardKey) {
 }
 
 module.exports = app;
-
+    
