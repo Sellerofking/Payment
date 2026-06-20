@@ -93,6 +93,8 @@ app.post('/webhook', async (req, res) => {
     const paymentStatus = data.status ? data.status.toUpperCase() : '';
     const amount = parseFloat(data.amount || 0);
     const orderId = data.order_id ? data.order_id.trim() : '';
+    const rawTxnId = data.txn_id ? data.txn_id.trim() : '';
+    const shortTxnId = rawTxnId.length > 8 ? rawTxnId.substring(8) : rawTxnId;
 
     // Stop if order id is empty (Bypass prevention)
     if (!orderId) {
@@ -118,7 +120,7 @@ app.post('/webhook', async (req, res) => {
                 return res.json({ status: "ok", message: "Already processing" });
             }
 
-            const markNote = `OrderID: ${orderId}`;
+            const markNote = `OrderID: ${orderId} | Txn: ${shortTxnId}`;
 
             const [checkRows] = await connection.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
             if (checkRows[0].count > 0) {
@@ -368,4 +370,4 @@ function renderSuccessHtml(orderId, cardKey) {
 }
 
 module.exports = app;
-    
+
