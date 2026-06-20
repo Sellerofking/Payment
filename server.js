@@ -7,20 +7,22 @@ require('dotenv').config();
 const app = express();
 app.use(cookieParser());
 
+// Raw payload read karna HMAC check ke liye zaroori hai
 app.use(express.json({
     verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); }
 }));
 app.use(express.urlencoded({ extended: true }));
 
 // ==========================================
-// CENTRAL CONFIGURATION (From config.php)
+// CENTRAL CONFIGURATION (Dynamic from Vercel Env)
 // ==========================================
-// Plans: Amount => Days
-const PLAN_RATES = {
-    50: 1,
-    300: 15,
-    500: 30
-};
+let PLAN_RATES = {};
+try {
+    // Vercel me {"50":1, "300":15, "500":30} JSON string format me pass hoga
+    PLAN_RATES = JSON.parse(process.env.PLAN_RATES || '{"50":1,"300":15,"500":30}');
+} catch (e) {
+    console.error("PLAN_RATES environment variable is not valid JSON.");
+}
 
 // ==========================================
 // 1. INDEX PAGE & PAYMENT LOGIC
@@ -31,9 +33,9 @@ app.get('/', (req, res) => {
 
 app.post('/', async (req, res) => {
     try {
-        const selectedAmount = parseInt(req.body.amount);
+        const selectedAmount = req.body.amount;
         
-        // Security Check: Only allow amounts defined in PLAN_RATES
+        // Security Check: Only allow amounts defined in Vercel Env
         if (!PLAN_RATES.hasOwnProperty(selectedAmount)) {
             return res.send(renderIndexHtml("Please select a valid plan."));
         }
@@ -56,18 +58,23 @@ app.post('/', async (req, res) => {
 });
 
 // ==========================================
-// 2. WEBHOOK RECEIVER (Exact PHP Logic Clone)
+// 2. WEBHOOK RECEIVER (Exact PHP Security Logic)
 // ==========================================
 app.post('/webhook', async (req, res) => {
-    const rawPayload = req.rawBody;
-    const receivedSignature = req.headers['x-xwallet-signature'] || '';
+    console.log(`\n--- NEW WEBHOOK HIT: ${new Date().toISOString()} ---`);
     
-    const calculatedSignature = crypto.createHmac('sha256', process.env.SECRET_KEY).update(rawPayload).digest('hex');
+    const rawPayload = req.rawBody;
+    console.log("PAYLOAD DATA:", rawPayload);
+
+    const receivedSignature = req.headers['x-xwallet-signature'] || '';
     const data = req.body;
 
-    let isSecure = false;
+    // Security Check 1: Calculate HMAC
+    const calculatedSignature = crypto.createHmac('sha256', process.env.SECRET_KEY).update(rawPayload).digest('hex');
 
-    if (receivedSignature !== '' && crypto.timingSafeEqual(Buffer.from(calculatedSignature), Buffer.from(receivedSignature))) {
+    // Security Check 2: Verify Signature strictly (Same as your webhook.php)
+    let isSecure = false;
+    if (receivedSignature !== '' && calculatedSignature === receivedSignature) {
         isSecure = true;
     } else {
         const bodySecret = data.secret_key || data.secret || '';
@@ -77,14 +84,19 @@ app.post('/webhook', async (req, res) => {
     }
 
     if (!isSecure) {
+        console.log("🚨 HACK ATTEMPT BLOCKED: Invalid Security Signature!");
         return res.status(401).json({ status: "error", message: "Unauthorized Access!" });
     }
+
+    console.log("SUCCESS ✅: Security verification passed!");
 
     const paymentStatus = data.status ? data.status.toUpperCase() : '';
     const amount = parseFloat(data.amount || 0);
     const orderId = data.order_id ? data.order_id.trim() : '';
 
+    // Stop if order id is empty (Bypass prevention)
     if (!orderId) {
+        console.log("ERROR ❌: Order ID is missing.");
         return res.status(400).json({ status: "error", message: "Missing Order ID" });
     }
 
@@ -97,31 +109,39 @@ app.post('/webhook', async (req, res) => {
         try {
             const markNote = `OrderID: ${orderId}`;
 
-            // Duplicate Check
+            // DUPLICATE CHECK: Prevent multiple keys
             const [checkRows] = await db.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
             if (checkRows[0].count > 0) {
+                console.log(`IGNORED ⚠️: Duplicate Webhook. Key already generated for ${orderId}.`);
                 return res.json({ status: "ok", message: "Already processed" });
             }
 
-            // Generate Card Logic
+            // Generate Key logic (Same md5/uniqid format)
             const generateCard = () => {
                 return crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
             };
             const newCard = generateCard();
 
-            // Insert with type=3 and value=duration (As per your new PHP)
+            // Insert into Database
             await db.execute(
                 "INSERT INTO single_card (card, value, type, mark, usable, soft_id) VALUES (?, ?, 3, ?, 1, ?)",
                 [newCard, duration, markNote, process.env.SOFT_ID]
             );
 
+            console.log(`SUCCESS 💰: Payment verified & Database inserted. Plan: ${duration} Days | Key: ${newCard}`);
             return res.json({ status: "ok", message: "Card generated" });
 
         } catch (error) {
-            console.error(error);
-            return res.status(500).send("DB Error");
+            // Agar aapne mark column par UNIQUE lagaya hai, toh duplicate insert yahan ER_DUP_ENTRY error dega, jise hum safely ignore kar sakte hain.
+            if (error.code === 'ER_DUP_ENTRY') {
+                 console.log("IGNORED ⚠️: Duplicate blocked by MySQL UNIQUE constraint.");
+                 return res.json({ status: "ok", message: "Already processed" });
+            }
+            console.error("DB ERROR ❌:", error.message);
+            return res.status(500).send("Database Error");
         }
     } else {
+        console.log(`IGNORED ⚠️: Status (${paymentStatus}) not success or Invalid Amount (${amount}).`);
         return res.json({ status: "ignored" });
     }
 });
@@ -154,24 +174,22 @@ app.get('/success', async (req, res) => {
 });
 
 // ==========================================
-// EXACT HTML/CSS UI TEMPLATES FROM UPLOAD
+// EXACT HTML/CSS UI TEMPLATES
 // ==========================================
 function renderIndexHtml(errorMsg = null) {
     let errorHtml = errorMsg ? `<div class="error-msg"><i class="fas fa-exclamation-triangle"></i> ${errorMsg}</div>` : '';
-    
     let plansHtml = '';
     let isFirst = true;
     
-    // PHP loop ka exact clone
+    // Dynamic looping of plans
     for (const [price, days] of Object.entries(PLAN_RATES)) {
-        let title = (days == 1) ? "1 Day" : `${days} Days`;
+        let title = (days === 1) ? "1 Day" : `${days} Days`;
         plansHtml += `
         <label class="plan-option ${isFirst ? 'selected' : ''}">
             <input type="radio" name="amount" value="${price}" ${isFirst ? 'checked' : ''}>
             <div class="plan-title">${title}</div>
             <div class="plan-price">₹${price}</div>
-        </label>
-        `;
+        </label>`;
         isFirst = false;
     }
 
@@ -192,7 +210,6 @@ function renderIndexHtml(errorMsg = null) {
         .brand-text h3 { margin: 0; font-size: 16px; font-weight: 600; }
         .brand-text p { margin: 0; font-size: 13px; color: #8a95a5; margin-top: 2px; }
         .tag { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #8a95a5; }
-        
         .plan-selector { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
         .plan-option { display: flex; justify-content: space-between; align-items: center; background: #131722; border: 1px solid #232a3b; padding: 15px; border-radius: 10px; cursor: pointer; transition: 0.2s; }
         .plan-option:hover { border-color: #3b82f6; }
@@ -200,7 +217,6 @@ function renderIndexHtml(errorMsg = null) {
         .plan-option.selected { border-color: #3b82f6; background: rgba(59, 130, 246, 0.1); }
         .plan-title { font-weight: 600; font-size: 15px; }
         .plan-price { font-size: 16px; font-weight: 700; color: #10b981; }
-
         .divider { height: 3px; background: #3b82f6; border-radius: 2px; margin: 25px 0; width: 100%; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);}
         .pay-btn { background-color: #ffffff; color: #000000; border: none; padding: 16px; font-size: 16px; font-weight: 700; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 10px; }
         .pay-btn:active { transform: scale(0.98); }
@@ -215,43 +231,25 @@ function renderIndexHtml(errorMsg = null) {
     <div class="payment-card">
         <div class="header">
             <div class="brand">
-                <div class="brand-icon">
-                    <i class="fas fa-shield-alt" style="color: #10b981; font-size: 20px;"></i>
-                </div>
-                <div class="brand-text">
-                    <h3>Trust</h3>
-                    <p>Secure Payment</p>
-                </div>
+                <div class="brand-icon"><i class="fas fa-shield-alt" style="color: #10b981; font-size: 20px;"></i></div>
+                <div class="brand-text"><h3>Trust</h3><p>Secure Payment</p></div>
             </div>
             <div class="tag">Premium</div>
         </div>
-
         ${errorHtml}
-
         <form method="POST" action="/" id="payForm">
             <p style="font-size: 13px; color: #8a95a5; margin-bottom: 10px; font-weight: 500; text-transform: uppercase;">Select Premium Plan</p>
-            
-            <div class="plan-selector">
-                ${plansHtml}
-            </div>
-
+            <div class="plan-selector">${plansHtml}</div>
             <div class="divider"></div>
-
             <button type="submit" name="pay_now" class="pay-btn" id="payBtn">
                 <i class="fas fa-qrcode"></i> Proceed to Pay & Get Key
             </button>
         </form>
-
         <div class="contact-us">
             Any issue? Contact <a href="https://t.me/SellerOfKing" target="_blank"><i class="fab fa-telegram"></i> @SellerOfKing</a>
         </div>
-
-        <div class="footer">
-            <div class="secure"><i class="fas fa-lock"></i> 100% Secure</div>
-            <div>Powered by Trust</div>
-        </div>
+        <div class="footer"><div class="secure"><i class="fas fa-lock"></i> 100% Secure</div><div>Powered by Trust</div></div>
     </div>
-
     <script>
         document.querySelectorAll('.plan-option').forEach(option => {
             option.addEventListener('click', function() {
@@ -260,7 +258,6 @@ function renderIndexHtml(errorMsg = null) {
                 this.querySelector('input[type="radio"]').checked = true;
             });
         });
-
         document.getElementById('payForm').addEventListener('submit', function() {
             var btn = document.getElementById('payBtn');
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting Gateway...';
@@ -288,37 +285,17 @@ function renderSuccessHtml(orderId, cardKey) {
         `;
     } else if (cardKey === "ERROR") {
         dynamicContent = `
-            <div class="status-box" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);">
-                <i class="fas fa-times-circle"></i> Database Error Occurred
-            </div>
+            <div class="status-box" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);"><i class="fas fa-times-circle"></i> Database Error Occurred</div>
         `;
     } else {
         dynamicContent = `
-            <div class="status-box" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);">
-                <i class="fas fa-check-circle"></i> Key Generated Successfully
-            </div>
-            
-            <div class="alert-box">
-                ⚠️ <strong>Important:</strong> Please save this premium key in a safe place (Notes/WhatsApp) for future use.<br><br>
-                For any issues, contact <strong>@SellerOfKing</strong> on Telegram.
-            </div>
-
-            <div class="key-container">
-                <div class="key-text" id="myKey">${cardKey}</div>
-            </div>
-            
-            <button class="btn-action" id="copyBtn" onclick="copyKey()">
-                <i class="fas fa-copy"></i> Copy & Paste On Your App
-            </button>
+            <div class="status-box" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);"><i class="fas fa-check-circle"></i> Key Generated Successfully</div>
+            <div class="alert-box">⚠️ <strong>Important:</strong> Please save this premium key in a safe place (Notes/WhatsApp) for future use.<br><br>For any issues, contact <strong>@SellerOfKing</strong> on Telegram.</div>
+            <div class="key-container"><div class="key-text" id="myKey">${cardKey}</div></div>
+            <button class="btn-action" id="copyBtn" onclick="copyKey()"><i class="fas fa-copy"></i> Copy & Paste On Your App</button>
         `;
-        
-        // Popup alert JS
         jsAlerts = `
-        window.onload = function() {
-            setTimeout(function() {
-                alert("✅ KEY GENERATED SUCCESSFULLY!\\n\\n⚠️ IMPORTANT: Please copy and save your premium key somewhere safe for future use.\\n\\n📞 Any issue? Contact on Telegram: @SellerOfKing");
-            }, 500);
-        };
+        window.onload = function() { setTimeout(function() { alert("✅ KEY GENERATED SUCCESSFULLY!\\n\\n⚠️ IMPORTANT: Please copy and save your premium key somewhere safe for future use.\\n\\n📞 Any issue? Contact on Telegram: @SellerOfKing"); }, 500); };
         `;
     }
 
@@ -356,51 +333,25 @@ function renderSuccessHtml(orderId, cardKey) {
 <body>
     <div class="payment-card">
         <div class="header">
-            <div class="brand">
-                <div class="brand-icon">
-                    <i class="fas fa-check" style="color: #10b981; font-size: 20px;"></i>
-                </div>
-                <div class="brand-text">
-                    <h3>Trust</h3>
-                    <p>Payment Success</p>
-                </div>
-            </div>
+            <div class="brand"><div class="brand-icon"><i class="fas fa-check" style="color: #10b981; font-size: 20px;"></i></div><div class="brand-text"><h3>Trust</h3><p>Payment Success</p></div></div>
             <div class="tag">#${orderShort}</div>
         </div>
-
         <div class="divider"></div>
-
         ${dynamicContent}
-
-        <div class="contact-us">
-            Any issue? Contact <a href="https://t.me/SellerOfKing" target="_blank"><i class="fab fa-telegram"></i> @SellerOfKing</a>
-        </div>
-
-        <div class="footer">
-            <div class="secure"><i class="fas fa-lock"></i> 100% Secure</div>
-            <div>Powered by Trust</div>
-        </div>
+        <div class="contact-us">Any issue? Contact <a href="https://t.me/SellerOfKing" target="_blank"><i class="fab fa-telegram"></i> @SellerOfKing</a></div>
+        <div class="footer"><div class="secure"><i class="fas fa-lock"></i> 100% Secure</div><div>Powered by Trust</div></div>
     </div>
-
     <script>
         ${jsAlerts}
-
         function copyKey() {
             var keyText = document.getElementById("myKey").innerText;
             navigator.clipboard.writeText(keyText).then(function() {
                 var btn = document.getElementById('copyBtn');
                 btn.innerHTML = '<i class="fas fa-check-double"></i> Copied to Clipboard!';
                 btn.style.backgroundColor = '#10b981';
-                
                 alert("✅ Key Copied!\\n\\nPlease save it securely. If you face any issues, message @SellerOfKing on Telegram.");
-
-                setTimeout(function() {
-                    btn.innerHTML = '<i class="fas fa-copy"></i> Copy & Paste On Your App';
-                    btn.style.backgroundColor = '#3b82f6';
-                }, 2000);
-            }).catch(function(err) {
-                alert("Failed to copy. Please select the text and copy manually.");
-            });
+                setTimeout(function() { btn.innerHTML = '<i class="fas fa-copy"></i> Copy & Paste On Your App'; btn.style.backgroundColor = '#3b82f6'; }, 2000);
+            }).catch(function(err) { alert("Failed to copy. Please select the text and copy manually."); });
         }
     </script>
 </body>
