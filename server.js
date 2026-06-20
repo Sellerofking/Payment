@@ -58,39 +58,25 @@ app.post('/', async (req, res) => {
 });
 
 // ==========================================
-// 2. WEBHOOK RECEIVER (Upgraded Security)
+// 2. WEBHOOK RECEIVER (Exact PHP Security Logic)
 // ==========================================
-
-// In-memory Set to block identical webhooks hitting at the exact same time
-const processingOrders = new Set();
-
 app.post('/webhook', async (req, res) => {
     console.log(`\n--- NEW WEBHOOK HIT: ${new Date().toISOString()} ---`);
     
     const rawPayload = req.rawBody;
+    console.log("PAYLOAD DATA:", rawPayload);
+
     const receivedSignature = req.headers['x-xwallet-signature'] || '';
     const data = req.body;
 
     // Security Check 1: Calculate HMAC
     const calculatedSignature = crypto.createHmac('sha256', process.env.SECRET_KEY).update(rawPayload).digest('hex');
 
-    // Security Check 2: STRICT Timing-Safe Signature Verification (Prevents Bypass)
+    // Security Check 2: Verify Signature strictly (Same as your webhook.php)
     let isSecure = false;
-    
-    try {
-        const calcBuffer = Buffer.from(calculatedSignature, 'utf8');
-        const recvBuffer = Buffer.from(receivedSignature, 'utf8');
-        
-        // Use timingSafeEqual exactly like PHP's hash_equals()
-        if (calcBuffer.length === recvBuffer.length && crypto.timingSafeEqual(calcBuffer, recvBuffer)) {
-            isSecure = true;
-        }
-    } catch (error) {
-        // Fallback for empty or invalid buffer lengths
-    }
-
-    // Fallback: Check Body Secret if Header Signature fails
-    if (!isSecure) {
+    if (receivedSignature !== '' && calculatedSignature === receivedSignature) {
+        isSecure = true;
+    } else {
         const bodySecret = data.secret_key || data.secret || '';
         if (bodySecret === process.env.SECRET_KEY && process.env.SECRET_KEY !== '') {
             isSecure = true;
@@ -102,41 +88,35 @@ app.post('/webhook', async (req, res) => {
         return res.status(401).json({ status: "error", message: "Unauthorized Access!" });
     }
 
+    console.log("SUCCESS ✅: Security verification passed!");
+
     const paymentStatus = data.status ? data.status.toUpperCase() : '';
     const amount = parseFloat(data.amount || 0);
     const orderId = data.order_id ? data.order_id.trim() : '';
 
+    // Stop if order id is empty (Bypass prevention)
     if (!orderId) {
         console.log("ERROR ❌: Order ID is missing.");
         return res.status(400).json({ status: "error", message: "Missing Order ID" });
     }
 
-    // RACE CONDITION LOCK: If this exact order is currently processing, drop the duplicate request
-    if (processingOrders.has(orderId)) {
-        console.log(`IGNORED ⚠️: Concurrent webhook blocked for ${orderId}.`);
-        return res.json({ status: "ok", message: "Already processing" });
+    let duration = 0;
+    if (PLAN_RATES.hasOwnProperty(amount)) {
+        duration = PLAN_RATES[amount];
     }
-    
-    // Lock this order ID
-    processingOrders.add(orderId);
 
-    try {
-        let duration = 0;
-        if (PLAN_RATES.hasOwnProperty(amount)) {
-            duration = PLAN_RATES[amount];
-        }
-
-        if ((paymentStatus === 'SUCCESS' || paymentStatus === 'TXN_SUCCESS') && duration > 0) {
+    if ((paymentStatus === 'SUCCESS' || paymentStatus === 'TXN_SUCCESS') && duration > 0) {
+        try {
             const markNote = `OrderID: ${orderId}`;
 
-            // Check if it already exists in DB
+            // DUPLICATE CHECK: Prevent multiple keys
             const [checkRows] = await db.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
             if (checkRows[0].count > 0) {
                 console.log(`IGNORED ⚠️: Duplicate Webhook. Key already generated for ${orderId}.`);
                 return res.json({ status: "ok", message: "Already processed" });
             }
 
-            // Generate Key
+            // Generate Key logic (Same md5/uniqid format)
             const generateCard = () => {
                 return crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
             };
@@ -151,21 +131,18 @@ app.post('/webhook', async (req, res) => {
             console.log(`SUCCESS 💰: Payment verified & Database inserted. Plan: ${duration} Days | Key: ${newCard}`);
             return res.json({ status: "ok", message: "Card generated" });
 
-        } else {
-            console.log(`IGNORED ⚠️: Status (${paymentStatus}) not success or Invalid Amount (${amount}).`);
-            return res.json({ status: "ignored" });
+        } catch (error) {
+            // Agar aapne mark column par UNIQUE lagaya hai, toh duplicate insert yahan ER_DUP_ENTRY error dega, jise hum safely ignore kar sakte hain.
+            if (error.code === 'ER_DUP_ENTRY') {
+                 console.log("IGNORED ⚠️: Duplicate blocked by MySQL UNIQUE constraint.");
+                 return res.json({ status: "ok", message: "Already processed" });
+            }
+            console.error("DB ERROR ❌:", error.message);
+            return res.status(500).send("Database Error");
         }
-    } catch (error) {
-        // If MySQL UNIQUE index catches a duplicate that the Set() missed
-        if (error.code === 'ER_DUP_ENTRY') {
-            console.log("IGNORED ⚠️: Duplicate blocked by MySQL UNIQUE constraint.");
-            return res.json({ status: "ok", message: "Already processed" });
-        }
-        console.error("DB ERROR ❌:", error.message);
-        return res.status(500).send("Database Error");
-    } finally {
-        // ALWAYS remove the lock, whether success, failure, or ignored, so memory doesn't leak
-        processingOrders.delete(orderId);
+    } else {
+        console.log(`IGNORED ⚠️: Status (${paymentStatus}) not success or Invalid Amount (${amount}).`);
+        return res.json({ status: "ignored" });
     }
 });
 
