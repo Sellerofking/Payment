@@ -106,24 +106,29 @@ app.post('/webhook', async (req, res) => {
     }
 
     if ((paymentStatus === 'SUCCESS' || paymentStatus === 'TXN_SUCCESS') && duration > 0) {
+        const lockName = `webhook_${orderId}`;
+        let connection;
+
         try {
+            connection = await db.getConnection();
+
+            const [lockResult] = await connection.execute("SELECT GET_LOCK(?, 10) as acquired", [lockName]);
+            if (!lockResult[0].acquired) {
+                console.log(`IGNORED ⚠️: Could not acquire lock for ${orderId}.`);
+                return res.json({ status: "ok", message: "Already processing" });
+            }
+
             const markNote = `OrderID: ${orderId}`;
 
-            // DUPLICATE CHECK: Prevent multiple keys
-            const [checkRows] = await db.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
+            const [checkRows] = await connection.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
             if (checkRows[0].count > 0) {
                 console.log(`IGNORED ⚠️: Duplicate Webhook. Key already generated for ${orderId}.`);
                 return res.json({ status: "ok", message: "Already processed" });
             }
 
-            // Generate Key logic (Same md5/uniqid format)
-            const generateCard = () => {
-                return crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
-            };
-            const newCard = generateCard();
+            const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
 
-            // Insert into Database
-            await db.execute(
+            await connection.execute(
                 "INSERT INTO single_card (card, value, type, mark, usable, soft_id) VALUES (?, ?, 3, ?, 1, ?)",
                 [newCard, duration, markNote, process.env.SOFT_ID]
             );
@@ -132,13 +137,13 @@ app.post('/webhook', async (req, res) => {
             return res.json({ status: "ok", message: "Card generated" });
 
         } catch (error) {
-            // Agar aapne mark column par UNIQUE lagaya hai, toh duplicate insert yahan ER_DUP_ENTRY error dega, jise hum safely ignore kar sakte hain.
-            if (error.code === 'ER_DUP_ENTRY') {
-                 console.log("IGNORED ⚠️: Duplicate blocked by MySQL UNIQUE constraint.");
-                 return res.json({ status: "ok", message: "Already processed" });
-            }
             console.error("DB ERROR ❌:", error.message);
             return res.status(500).send("Database Error");
+        } finally {
+            if (connection) {
+                await connection.execute("SELECT RELEASE_LOCK(?)", [lockName]);
+                connection.release();
+            }
         }
     } else {
         console.log(`IGNORED ⚠️: Status (${paymentStatus}) not success or Invalid Amount (${amount}).`);
@@ -359,3 +364,4 @@ function renderSuccessHtml(orderId, cardKey) {
 }
 
 module.exports = app;
+
