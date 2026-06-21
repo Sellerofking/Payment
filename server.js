@@ -60,78 +60,47 @@ app.post('/', async (req, res) => {
 });
 
 // ==========================================
-// KEY GENERATION LOCK (in-memory dedup)
+// KEY GENERATION LOCK (Database Level Atomic Insert)
 // ==========================================
-const processingOrders = new Set();
-
 async function generateKeyIfNeeded(orderId, duration) {
     const markNote = `OrderID: ${orderId}`;
-    const lockKey = orderId;
-
-    if (processingOrders.has(lockKey)) return;
-    processingOrders.add(lockKey);
 
     try {
-        const [checkRows] = await db.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
-        if (checkRows[0].count === 0) {
-            const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
-            await db.execute(
-                "INSERT INTO single_card (card, value, type, mark, usable, soft_id) VALUES (?, ?, 3, ?, 1, ?)",
-                [newCard, duration, markNote, process.env.SOFT_ID]
-            );
+        // Step 1: Generate a random key first
+        const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
+        
+        // Step 2: Atomic Query (Ye insert tabhi karega jab markNote already exist NAHI karta ho)
+        const insertQuery = `
+            INSERT INTO single_card (card, value, type, mark, usable, soft_id)
+            SELECT ?, ?, 3, ?, 1, ?
+            FROM DUAL
+            WHERE NOT EXISTS (
+                SELECT 1 FROM single_card WHERE mark = ?
+            )
+        `;
+
+        // Execute the atomic query
+        const [result] = await db.execute(insertQuery, [
+            newCard, 
+            duration, 
+            markNote, 
+            process.env.SOFT_ID, 
+            markNote // Second time for the WHERE NOT EXISTS clause
+        ]);
+
+        // Agar row insert hui, matlab orderID naya tha
+        if (result.affectedRows > 0) {
             console.log(`SUCCESS 💰: Key generated. Plan: ${duration} Days | Key: ${newCard} | Order: ${orderId}`);
+        } else {
+            // Agar 0 rows affect hui, matlab already add ho chuka hai
+            console.log(`SKIPPED ⏩: OrderID ${orderId} already exists in database. Duplicate prevented.`);
         }
+
     } catch (error) {
-        if (error.code !== 'ER_DUP_ENTRY') {
-            console.error("DB ERROR ❌:", error.message);
-        }
-    } finally {
-        processingOrders.delete(lockKey);
+        console.error("DB ERROR ❌:", error.message);
     }
 }
-app.post('/webhook', async (req, res) => {
-    console.log(`\n--- WEBHOOK HIT: ${new Date().toISOString()} ---`);
 
-    const rawPayload = req.rawBody;
-    const receivedSignature = req.headers['x-xwallet-signature'] || '';
-    const data = req.body;
-
-    const calculatedSignature = crypto.createHmac('sha256', process.env.SECRET_KEY).update(rawPayload).digest('hex');
-
-    let isSecure = false;
-    if (receivedSignature !== '' && calculatedSignature === receivedSignature) {
-        isSecure = true;
-    } else {
-        const bodySecret = data.secret_key || data.secret || '';
-        if (bodySecret === process.env.SECRET_KEY && process.env.SECRET_KEY !== '') {
-            isSecure = true;
-        }
-    }
-
-    if (!isSecure) {
-        console.log("🚨 BLOCKED: Invalid Signature!");
-        return res.status(401).json({ status: "error", message: "Unauthorized" });
-    }
-
-    const paymentStatus = data.status ? data.status.toUpperCase() : '';
-    const amount = parseFloat(data.amount || 0);
-    const orderId = data.order_id ? data.order_id.trim() : '';
-
-    if (!orderId) {
-        return res.status(400).json({ status: "error", message: "Missing Order ID" });
-    }
-
-    let duration = 0;
-    if (PLAN_RATES.hasOwnProperty(amount)) {
-        duration = PLAN_RATES[amount];
-    }
-
-    if ((paymentStatus === 'SUCCESS' || paymentStatus === 'TXN_SUCCESS') && duration > 0) {
-        await generateKeyIfNeeded(orderId, duration);
-    }
-
-    return res.json({ status: "ok" });
-});
 
 // ==========================================
 // 3. SUCCESS PAGE
