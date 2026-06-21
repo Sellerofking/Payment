@@ -60,21 +60,44 @@ app.post('/', async (req, res) => {
 });
 
 // ==========================================
-// 2. WEBHOOK RECEIVER (Exact PHP Security Logic)
+// KEY GENERATION LOCK (in-memory dedup)
 // ==========================================
-app.post('/webhook', async (req, res) => {
-    console.log(`\n--- NEW WEBHOOK HIT: ${new Date().toISOString()} ---`);
-    
-    const rawPayload = req.rawBody;
-    console.log("PAYLOAD DATA:", rawPayload);
+const processingOrders = new Set();
 
+async function generateKeyIfNeeded(orderId, duration) {
+    const markNote = `OrderID: ${orderId}`;
+    const lockKey = orderId;
+
+    if (processingOrders.has(lockKey)) return;
+    processingOrders.add(lockKey);
+
+    try {
+        const [checkRows] = await db.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
+        if (checkRows[0].count === 0) {
+            const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
+            await db.execute(
+                "INSERT INTO single_card (card, value, type, mark, usable, soft_id) VALUES (?, ?, 3, ?, 1, ?)",
+                [newCard, duration, markNote, process.env.SOFT_ID]
+            );
+            console.log(`SUCCESS 💰: Key generated. Plan: ${duration} Days | Key: ${newCard} | Order: ${orderId}`);
+        }
+    } catch (error) {
+        if (error.code !== 'ER_DUP_ENTRY') {
+            console.error("DB ERROR ❌:", error.message);
+        }
+    } finally {
+        processingOrders.delete(lockKey);
+    }
+}
+app.post('/webhook', async (req, res) => {
+    console.log(`\n--- WEBHOOK HIT: ${new Date().toISOString()} ---`);
+
+    const rawPayload = req.rawBody;
     const receivedSignature = req.headers['x-xwallet-signature'] || '';
     const data = req.body;
 
-    // Security Check 1: Calculate HMAC
     const calculatedSignature = crypto.createHmac('sha256', process.env.SECRET_KEY).update(rawPayload).digest('hex');
 
-    // Security Check 2: Verify Signature strictly (Same as your webhook.php)
     let isSecure = false;
     if (receivedSignature !== '' && calculatedSignature === receivedSignature) {
         isSecure = true;
@@ -86,21 +109,15 @@ app.post('/webhook', async (req, res) => {
     }
 
     if (!isSecure) {
-        console.log("🚨 HACK ATTEMPT BLOCKED: Invalid Security Signature!");
-        return res.status(401).json({ status: "error", message: "Unauthorized Access!" });
+        console.log("🚨 BLOCKED: Invalid Signature!");
+        return res.status(401).json({ status: "error", message: "Unauthorized" });
     }
-
-    console.log("SUCCESS ✅: Security verification passed!");
 
     const paymentStatus = data.status ? data.status.toUpperCase() : '';
     const amount = parseFloat(data.amount || 0);
     const orderId = data.order_id ? data.order_id.trim() : '';
-    const rawTxnId = data.txn_id ? data.txn_id.trim() : '';
-    const shortTxnId = rawTxnId.length > 8 ? rawTxnId.substring(8) : rawTxnId;
 
-    // Stop if order id is empty (Bypass prevention)
     if (!orderId) {
-        console.log("ERROR ❌: Order ID is missing.");
         return res.status(400).json({ status: "error", message: "Missing Order ID" });
     }
 
@@ -110,37 +127,10 @@ app.post('/webhook', async (req, res) => {
     }
 
     if ((paymentStatus === 'SUCCESS' || paymentStatus === 'TXN_SUCCESS') && duration > 0) {
-        try {
-            const markNote = `OrderID: ${orderId}`;
-
-            const [checkRows] = await db.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
-            if (checkRows[0].count > 0) {
-                console.log(`IGNORED ⚠️: Duplicate Webhook. Key already generated for ${orderId}.`);
-                return res.json({ status: "ok", message: "Already processed" });
-            }
-
-            const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
-
-            await db.execute(
-                "INSERT INTO single_card (card, value, type, mark, usable, soft_id) VALUES (?, ?, 3, ?, 1, ?)",
-                [newCard, duration, markNote, process.env.SOFT_ID]
-            );
-
-            console.log(`SUCCESS 💰: Payment verified & Database inserted. Plan: ${duration} Days | Key: ${newCard}`);
-            return res.json({ status: "ok", message: "Card generated" });
-
-        } catch (error) {
-            if (error.code === 'ER_DUP_ENTRY') {
-                 console.log("IGNORED ⚠️: Duplicate blocked by MySQL UNIQUE constraint.");
-                 return res.json({ status: "ok", message: "Already processed" });
-            }
-            console.error("DB ERROR ❌:", error.message);
-            return res.status(500).send("Database Error");
-        }
-    } else {
-        console.log(`IGNORED ⚠️: Status (${paymentStatus}) not success or Invalid Amount (${amount}).`);
-        return res.json({ status: "ignored" });
+        await generateKeyIfNeeded(orderId, duration);
     }
+
+    return res.json({ status: "ok" });
 });
 
 // ==========================================
@@ -183,21 +173,7 @@ app.get('/success', async (req, res) => {
         }
 
         if (verified && duration > 0) {
-            try {
-                const [checkRows] = await db.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
-                if (checkRows[0].count === 0) {
-                    const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
-                    await db.execute(
-                        "INSERT INTO single_card (card, value, type, mark, usable, soft_id) VALUES (?, ?, 3, ?, 1, ?)",
-                        [newCard, duration, markNote, process.env.SOFT_ID]
-                    );
-                    console.log(`SUCCESS 💰: Key generated on success page. Plan: ${duration} Days | Key: ${newCard}`);
-                }
-            } catch (error) {
-                if (error.code !== 'ER_DUP_ENTRY') {
-                    console.error("DB ERROR ❌:", error.message);
-                }
-            }
+            await generateKeyIfNeeded(orderId, duration);
         }
     }
 
@@ -283,7 +259,7 @@ function renderIndexHtml(errorMsg = null) {
         </div>
         ${errorHtml}
         <form method="POST" action="/" id="payForm">
-            <p style="font-size: 13px; color: #8a95a5; margin-bottom: 10px; font-weight: 500; text-transform: uppercase;">Select Premium Plan</p>
+            <p style="font-size: 13px; color: #8a95a5; margin-bottom: 10px; font-weight: 500; text-transform: uppercase;">Select Premium Plan2</p>
             <div class="plan-selector">${plansHtml}</div>
             <div class="divider"></div>
             <button type="submit" name="pay_now" class="pay-btn" id="payBtn">
