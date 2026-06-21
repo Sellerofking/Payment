@@ -48,6 +48,8 @@ app.post('/', async (req, res) => {
 
         if (data.payment_link && data.order_id) {
             res.cookie('my_order_id', data.order_id, { maxAge: 900000, httpOnly: true });
+            res.cookie('my_order_amount', selectedAmount, { maxAge: 900000, httpOnly: true });
+            res.cookie('my_qr_code', data.qr_code_id || '', { maxAge: 900000, httpOnly: true });
             res.redirect(data.payment_link);
         } else {
             res.send(renderIndexHtml("Payment link generation failed. Please try again."));
@@ -146,6 +148,7 @@ app.post('/webhook', async (req, res) => {
 // ==========================================
 app.get('/success', async (req, res) => {
     let orderId = req.cookies.my_order_id || req.query.order_id || '';
+    const isPaymentSuccess = req.query.status === 'success';
 
     if (!orderId) {
         return res.send("<div style='background:#0f1319; color:#fff; text-align:center; padding:50px; font-family:sans-serif; height:100vh;'><h2>❌ Invalid Access</h2></div>");
@@ -155,11 +158,54 @@ app.get('/success', async (req, res) => {
         res.cookie('my_order_id', orderId, { maxAge: 900000, httpOnly: true });
     }
 
+    const markNote = `OrderID: ${orderId}`;
+
+    if (isPaymentSuccess) {
+        const amount = parseFloat(req.cookies.my_order_amount || 0);
+        const qrCodeId = req.cookies.my_qr_code || '';
+        let duration = 0;
+        if (PLAN_RATES.hasOwnProperty(amount)) {
+            duration = PLAN_RATES[amount];
+        }
+
+        let verified = false;
+        if (qrCodeId && duration > 0) {
+            try {
+                const checkUrl = `https://xwalletbot.shop/wallet/getway/check.php?code=${qrCodeId}`;
+                const checkRes = await fetch(checkUrl);
+                const checkData = await checkRes.json();
+                if (checkData.status === 'TXN_SUCCESS') {
+                    verified = true;
+                }
+            } catch (e) {
+                console.error("Gateway verification failed:", e.message);
+            }
+        }
+
+        if (verified && duration > 0) {
+            try {
+                const [checkRows] = await db.execute("SELECT COUNT(*) as count FROM single_card WHERE mark = ?", [markNote]);
+                if (checkRows[0].count === 0) {
+                    const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
+                    await db.execute(
+                        "INSERT INTO single_card (card, value, type, mark, usable, soft_id) VALUES (?, ?, 3, ?, 1, ?)",
+                        [newCard, duration, markNote, process.env.SOFT_ID]
+                    );
+                    console.log(`SUCCESS 💰: Key generated on success page. Plan: ${duration} Days | Key: ${newCard}`);
+                }
+            } catch (error) {
+                if (error.code !== 'ER_DUP_ENTRY') {
+                    console.error("DB ERROR ❌:", error.message);
+                }
+            }
+        }
+    }
+
     let cardKey = "WAITING";
     try {
         const [rows] = await db.execute(
             "SELECT card FROM single_card WHERE mark = ? ORDER BY id DESC LIMIT 1",
-            [`OrderID: ${orderId}`]
+            [markNote]
         );
 
         if (rows.length > 0) {
@@ -358,4 +404,3 @@ function renderSuccessHtml(orderId, cardKey) {
 }
 
 module.exports = app;
-
