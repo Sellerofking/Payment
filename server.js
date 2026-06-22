@@ -205,13 +205,20 @@ function renderIndexHtml(errorMsg = null) {
         .brand-text p { margin: 0; font-size: 13px; color: #8a95a5; margin-top: 2px; }
         .tag { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #8a95a5; }
         
-        /* Video and Intro Styles */
+        /* Video and Intro Styles (Updated for Mobile Portrait Video) */
         .intro-section { display: ${introDisplay}; flex-direction: column; gap: 15px; margin-bottom: 10px; }
         .animated-title { text-align: center; font-size: 15px; font-weight: 600; color: #10b981; animation: pulse 2s infinite; display: flex; justify-content: center; align-items: center; gap: 8px; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.02); } 100% { opacity: 1; transform: scale(1); } }
-        .video-wrapper { position: relative; padding-bottom: 56.25%; height: 0; border-radius: 12px; overflow: hidden; border: 1px solid #232a3b; background: #000; }
+        
+        /* Mobile Portrait Container Setup */
+        .video-box { max-width: 220px; margin: 0 auto; width: 100%; } /* Max width rakha hai taaki lamba hone pe bahar na jaye */
+        .video-wrapper { position: relative; padding-bottom: 177.77%; /* 9:16 Aspect Ratio */ height: 0; border-radius: 12px; overflow: hidden; border: 1px solid #3b82f6; background: #000; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
         .video-wrapper iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        .proceed-to-plans-btn { background-color: #3b82f6; color: #fff; border: none; padding: 15px; font-size: 15px; font-weight: 600; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 5px; }
+        
+        .zoom-btn { background: #1f2937; color: #fff; border: 1px solid #374151; padding: 10px; font-size: 13px; font-weight: 600; border-radius: 8px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 12px; }
+        .zoom-btn:hover { background: #374151; border-color: #10b981; color: #10b981; }
+
+        .proceed-to-plans-btn { background-color: #3b82f6; color: #fff; border: none; padding: 15px; font-size: 15px; font-weight: 600; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 10px; }
         .proceed-to-plans-btn:active { transform: scale(0.98); }
         
         /* Plan Elements */
@@ -246,14 +253,22 @@ function renderIndexHtml(errorMsg = null) {
         </div>
         ${errorHtml}
         
-        <!-- STEP 1: VIDEO INTRO -->
+        <!-- STEP 1: VIDEO INTRO (Portrait Layout) -->
         <div id="introSection" class="intro-section">
             <div class="animated-title">
                 <i class="fas fa-play-circle"></i> How to purchase key
             </div>
-            <div class="video-wrapper">
-                <iframe src="https://player.vimeo.com/video/1203472119" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+            
+            <div class="video-box">
+                <div class="video-wrapper">
+                    <iframe id="tutorialVideo" src="https://player.vimeo.com/video/1203472119" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+                </div>
+                <!-- Zoom Button -->
+                <button type="button" class="zoom-btn" onclick="openFullscreen()">
+                    <i class="fas fa-expand-arrows-alt"></i> Zoom / Fullscreen
+                </button>
             </div>
+
             <button type="button" class="proceed-to-plans-btn" id="showPlansBtn">
                 Proceed to Purchase Key <i class="fas fa-arrow-right"></i>
             </button>
@@ -276,6 +291,18 @@ function renderIndexHtml(errorMsg = null) {
     </div>
     
     <script>
+        // Fullscreen Logic
+        function openFullscreen() {
+            var iframe = document.getElementById("tutorialVideo");
+            if (iframe.requestFullscreen) {
+                iframe.requestFullscreen();
+            } else if (iframe.webkitRequestFullscreen) { /* Safari */
+                iframe.webkitRequestFullscreen();
+            } else if (iframe.msRequestFullscreen) { /* IE11 */
+                iframe.msRequestFullscreen();
+            }
+        }
+
         // Transition from Video to Plan Selection
         document.getElementById('showPlansBtn')?.addEventListener('click', function() {
             document.getElementById('introSection').style.display = 'none';
