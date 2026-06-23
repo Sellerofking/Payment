@@ -7,26 +7,22 @@ require('dotenv').config();
 const app = express();
 app.use(cookieParser());
 
-// Raw payload read karna HMAC check ke liye zaroori hai
 app.use(express.json({
     verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); }
 }));
 app.use(express.urlencoded({ extended: true }));
 
-// ==========================================
-// CENTRAL CONFIGURATION (Dynamic from Vercel Env)
-// ==========================================
 let PLAN_RATES = {};
 try {
-    // Vercel me {"50":1, "300":15, "500":30} JSON string format me pass hoga
     PLAN_RATES = JSON.parse(process.env.PLAN_RATES || '{"50":1,"300":15,"500":30}');
 } catch (e) {
     console.error("PLAN_RATES environment variable is not valid JSON.");
 }
 
-// ==========================================
-// 1. INDEX PAGE & PAYMENT LOGIC
-// ==========================================
+const PAYINDIA_API_URL = 'https://payment.techbloggers.in/api';
+const API_KEY = process.env.API_KEY;
+const API_SECRET = process.env.API_SECRET;
+
 app.get('/', (req, res) => {
     res.send(renderIndexHtml());
 });
@@ -35,22 +31,39 @@ app.post('/', async (req, res) => {
     try {
         const selectedAmount = req.body.amount;
         
-        // Security Check: Only allow amounts defined in Vercel Env
         if (!PLAN_RATES.hasOwnProperty(selectedAmount)) {
             return res.send(renderIndexHtml("Please select a valid plan."));
         }
 
-        const successUrl = encodeURIComponent(process.env.SUCCESS_URL);
-        const apiUrl = `https://xwalletbot.shop/wallet/getway/pay.php?key=${process.env.API_KEY}&amount=${selectedAmount}&redirect_url=${successUrl}`;
-        
-        const response = await fetch(apiUrl);
+        const orderId = 'ORD_' + Date.now();
+        const duration = PLAN_RATES[selectedAmount];
+        const customerName = req.body.customer_name || 'Customer';
+
+        const callbackUrl = `${req.protocol}://${req.get('host')}/success?order_id=${orderId}&amount=${selectedAmount}&duration=${duration}`;
+
+        const payload = {
+            amount: parseFloat(selectedAmount).toFixed(2),
+            order_id: orderId,
+            customer_name: customerName,
+            callback_url: callbackUrl
+        };
+
+        const response = await fetch(`${PAYINDIA_API_URL}/create-order`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-API-Key': API_KEY,
+                'X-API-Secret': API_SECRET
+            },
+            body: JSON.stringify(payload)
+        });
+
         const data = await response.json();
 
-        if (data.payment_link && data.order_id) {
-            res.cookie('my_order_id', data.order_id, { maxAge: 900000, httpOnly: true });
+        if (data.status === 'success' && data.data.payment_url) {
+            res.cookie('my_order_id', orderId, { maxAge: 900000, httpOnly: true });
             res.cookie('my_order_amount', selectedAmount, { maxAge: 900000, httpOnly: true });
-            res.cookie('my_qr_code', data.qr_code_id || '', { maxAge: 900000, httpOnly: true });
-            res.redirect(data.payment_link);
+            res.redirect(data.data.payment_url);
         } else {
             res.send(renderIndexHtml("Payment link generation failed. Please try again."));
         }
@@ -59,17 +72,12 @@ app.post('/', async (req, res) => {
     }
 });
 
-// ==========================================
-// KEY GENERATION LOCK (Database Level Atomic Insert)
-// ==========================================
 async function generateKeyIfNeeded(orderId, duration) {
     const markNote = `OrderID: ${orderId}`;
 
     try {
-        // Step 1: Generate a random key first
         const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
         
-        // Step 2: Atomic Query
         const insertQuery = `
             INSERT INTO single_card (card, value, type, mark, usable, soft_id)
             SELECT ?, ?, 3, ?, 1, ?
@@ -88,25 +96,22 @@ async function generateKeyIfNeeded(orderId, duration) {
         ]);
 
         if (result.affectedRows > 0) {
-            console.log(`SUCCESS 💰: Key generated. Plan: ${duration} Days | Key: ${newCard} | Order: ${orderId}`);
+            console.log(`SUCCESS: Key generated. Plan: ${duration} Days | Key: ${newCard} | Order: ${orderId}`);
         } else {
-            console.log(`SKIPPED ⏩: OrderID ${orderId} already exists in database. Duplicate prevented.`);
+            console.log(`SKIPPED: OrderID ${orderId} already exists in database. Duplicate prevented.`);
         }
 
     } catch (error) {
-        console.error("DB ERROR ❌:", error.message);
+        console.error("DB ERROR:", error.message);
     }
 }
 
-// ==========================================
-// 3. SUCCESS PAGE
-// ==========================================
 app.get('/success', async (req, res) => {
     let orderId = req.cookies.my_order_id || req.query.order_id || '';
     const isPaymentSuccess = req.query.status === 'success';
 
     if (!orderId) {
-        return res.send("<div style='background:#0f1319; color:#fff; text-align:center; padding:50px; font-family:sans-serif; height:100vh;'><h2>❌ Invalid Access</h2></div>");
+        return res.send("<div style='background:#0f1319; color:#fff; text-align:center; padding:50px; font-family:sans-serif; height:100vh;'><h2>Invalid Access</h2></div>");
     }
 
     if (!req.cookies.my_order_id) {
@@ -114,31 +119,38 @@ app.get('/success', async (req, res) => {
     }
 
     const markNote = `OrderID: ${orderId}`;
+    let verified = false;
 
     if (isPaymentSuccess) {
-        const amount = parseFloat(req.cookies.my_order_amount || 0);
-        const qrCodeId = req.cookies.my_qr_code || '';
-        let duration = 0;
-        if (PLAN_RATES.hasOwnProperty(amount)) {
-            duration = PLAN_RATES[amount];
-        }
+        try {
+            const response = await fetch(`${PAYINDIA_API_URL}/check-status`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': API_KEY,
+                    'X-API-Secret': API_SECRET
+                },
+                body: JSON.stringify({ order_id: orderId })
+            });
 
-        let verified = false;
-        if (qrCodeId && duration > 0) {
-            try {
-                const checkUrl = `https://xwalletbot.shop/wallet/getway/check.php?code=${qrCodeId}`;
-                const checkRes = await fetch(checkUrl);
-                const checkData = await checkRes.json();
-                if (checkData.status === 'TXN_SUCCESS') {
-                    verified = true;
-                }
-            } catch (e) {
-                console.error("Gateway verification failed:", e.message);
+            const data = await response.json();
+
+            if (data.status === 'success' && data.data.payment_status === 'success') {
+                verified = true;
             }
+        } catch (e) {
+            console.error("Payment verification failed:", e.message);
         }
 
-        if (verified && duration > 0) {
-            await generateKeyIfNeeded(orderId, duration);
+        if (verified) {
+            const amount = parseFloat(req.cookies.my_order_amount || req.query.amount || 0);
+            let duration = req.query.duration ? parseInt(req.query.duration) : 0;
+            if (!duration && PLAN_RATES.hasOwnProperty(amount)) {
+                duration = PLAN_RATES[amount];
+            }
+            if (duration > 0) {
+                await generateKeyIfNeeded(orderId, duration);
+            }
         }
     }
 
@@ -407,4 +419,3 @@ function renderSuccessHtml(orderId, cardKey) {
 }
 
 module.exports = app;
-
