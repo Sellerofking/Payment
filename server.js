@@ -181,9 +181,6 @@ function renderIndexHtml(errorMsg = null) {
         isFirst = false;
     }
 
-    let introDisplay = errorMsg ? 'none' : 'flex';
-    let formDisplay = errorMsg ? 'block' : 'none';
-
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -202,15 +199,12 @@ function renderIndexHtml(errorMsg = null) {
         .brand-text p { margin: 0; font-size: 13px; color: #8a95a5; margin-top: 2px; }
         .tag { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #8a95a5; }
 
-        .intro-section { display: ${introDisplay}; flex-direction: column; gap: 15px; margin-bottom: 10px; }
+        #payForm { display: block; }
+        .intro-section { display: flex; flex-direction: column; gap: 15px; margin-bottom: 10px; }
         .animated-title { text-align: center; font-size: 15px; font-weight: 600; color: #10b981; animation: pulse 2s infinite; display: flex; justify-content: center; align-items: center; gap: 8px; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.02); } 100% { opacity: 1; transform: scale(1); } }
-        .video-wrapper { position: relative; padding-bottom: 56.25%; height: 0; border-radius: 12px; overflow: hidden; border: 1px solid #232a3b; background: #000; }
+        .video-wrapper { position: relative; padding-bottom: 177.78%; height: 0; border-radius: 12px; overflow: hidden; border: 1px solid #232a3b; background: #000; }
         .video-wrapper iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        .proceed-to-plans-btn { background-color: #3b82f6; color: #fff; border: none; padding: 15px; font-size: 15px; font-weight: 600; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 5px; }
-        .proceed-to-plans-btn:active { transform: scale(0.98); }
-
-        #payForm { display: ${formDisplay}; }
         .plan-selector { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
         .plan-option { display: flex; justify-content: space-between; align-items: center; background: #131722; border: 1px solid #232a3b; padding: 15px; border-radius: 10px; cursor: pointer; transition: 0.2s; }
         .plan-option:hover { border-color: #3b82f6; }
@@ -240,16 +234,13 @@ function renderIndexHtml(errorMsg = null) {
         </div>
         ${errorHtml}
 
-        <div id="introSection" class="intro-section">
+        <div class="intro-section">
             <div class="animated-title">
                 <i class="fas fa-play-circle"></i> How to purchase key
             </div>
             <div class="video-wrapper">
                 <iframe src="https://player.vimeo.com/video/1203472119" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
             </div>
-            <button type="button" class="proceed-to-plans-btn" id="showPlansBtn">
-                Proceed to Purchase Key <i class="fas fa-arrow-right"></i>
-            </button>
         </div>
 
         <form method="POST" action="/" id="payForm">
@@ -268,11 +259,6 @@ function renderIndexHtml(errorMsg = null) {
     </div>
 
     <script>
-        document.getElementById('showPlansBtn')?.addEventListener('click', function() {
-            document.getElementById('introSection').style.display = 'none';
-            document.getElementById('payForm').style.display = 'block';
-        });
-
         document.querySelectorAll('.plan-option').forEach(option => {
             option.addEventListener('click', function() {
                 document.querySelectorAll('.plan-option').forEach(opt => opt.classList.remove('selected'));
