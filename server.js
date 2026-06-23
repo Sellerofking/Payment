@@ -69,7 +69,7 @@ async function generateKeyIfNeeded(orderId, duration) {
         // Step 1: Generate a random key first
         const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
         
-        // Step 2: Atomic Query (Ye insert tabhi karega jab markNote already exist NAHI karta ho)
+        // Step 2: Atomic Query
         const insertQuery = `
             INSERT INTO single_card (card, value, type, mark, usable, soft_id)
             SELECT ?, ?, 3, ?, 1, ?
@@ -79,20 +79,17 @@ async function generateKeyIfNeeded(orderId, duration) {
             )
         `;
 
-        // Execute the atomic query
         const [result] = await db.execute(insertQuery, [
             newCard, 
             duration, 
             markNote, 
             process.env.SOFT_ID, 
-            markNote // Second time for the WHERE NOT EXISTS clause
+            markNote
         ]);
 
-        // Agar row insert hui, matlab orderID naya tha
         if (result.affectedRows > 0) {
             console.log(`SUCCESS 💰: Key generated. Plan: ${duration} Days | Key: ${newCard} | Order: ${orderId}`);
         } else {
-            // Agar 0 rows affect hui, matlab already add ho chuka hai
             console.log(`SKIPPED ⏩: OrderID ${orderId} already exists in database. Duplicate prevented.`);
         }
 
@@ -100,7 +97,6 @@ async function generateKeyIfNeeded(orderId, duration) {
         console.error("DB ERROR ❌:", error.message);
     }
 }
-
 
 // ==========================================
 // 3. SUCCESS PAGE
@@ -183,7 +179,6 @@ function renderIndexHtml(errorMsg = null) {
         isFirst = false;
     }
 
-    // Smart UX: If there's an error, skip the intro and show the form directly.
     let introDisplay = errorMsg ? 'none' : 'flex';
     let formDisplay = errorMsg ? 'block' : 'none';
 
@@ -205,14 +200,12 @@ function renderIndexHtml(errorMsg = null) {
         .brand-text p { margin: 0; font-size: 13px; color: #8a95a5; margin-top: 2px; }
         .tag { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #8a95a5; }
         
-        /* Video and Intro Styles (Updated for Mobile Portrait Video) */
         .intro-section { display: ${introDisplay}; flex-direction: column; gap: 15px; margin-bottom: 10px; }
         .animated-title { text-align: center; font-size: 15px; font-weight: 600; color: #10b981; animation: pulse 2s infinite; display: flex; justify-content: center; align-items: center; gap: 8px; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.02); } 100% { opacity: 1; transform: scale(1); } }
         
-        /* Mobile Portrait Container Setup */
-        .video-box { max-width: 220px; margin: 0 auto; width: 100%; } /* Max width rakha hai taaki lamba hone pe bahar na jaye */
-        .video-wrapper { position: relative; padding-bottom: 177.77%; /* 9:16 Aspect Ratio */ height: 0; border-radius: 12px; overflow: hidden; border: 1px solid #3b82f6; background: #000; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        .video-box { max-width: 220px; margin: 0 auto; width: 100%; } 
+        .video-wrapper { position: relative; padding-bottom: 177.77%; height: 0; border-radius: 12px; overflow: hidden; border: 1px solid #3b82f6; background: #000; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
         .video-wrapper iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
         
         .zoom-btn { background: #1f2937; color: #fff; border: 1px solid #374151; padding: 10px; font-size: 13px; font-weight: 600; border-radius: 8px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 12px; }
@@ -221,7 +214,6 @@ function renderIndexHtml(errorMsg = null) {
         .proceed-to-plans-btn { background-color: #3b82f6; color: #fff; border: none; padding: 15px; font-size: 15px; font-weight: 600; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 10px; }
         .proceed-to-plans-btn:active { transform: scale(0.98); }
         
-        /* Plan Elements */
         #payForm { display: ${formDisplay}; }
         .plan-selector { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
         .plan-option { display: flex; justify-content: space-between; align-items: center; background: #131722; border: 1px solid #232a3b; padding: 15px; border-radius: 10px; cursor: pointer; transition: 0.2s; }
@@ -234,7 +226,6 @@ function renderIndexHtml(errorMsg = null) {
         .pay-btn { background-color: #ffffff; color: #000000; border: none; padding: 16px; font-size: 16px; font-weight: 700; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 10px; }
         .pay-btn:active { transform: scale(0.98); }
         
-        /* Footer Elements */
         .contact-us { text-align: center; margin-top: 20px; font-size: 13px; color: #8a95a5; }
         .contact-us a { color: #3b82f6; text-decoration: none; font-weight: 600; }
         .footer { text-align: center; margin-top: 15px; font-size: 12px; color: #8a95a5; display: flex; justify-content: space-between; align-items: center; padding: 0 5px;}
@@ -253,7 +244,6 @@ function renderIndexHtml(errorMsg = null) {
         </div>
         ${errorHtml}
         
-        <!-- STEP 1: VIDEO INTRO (Portrait Layout) -->
         <div id="introSection" class="intro-section">
             <div class="animated-title">
                 <i class="fas fa-play-circle"></i> How to purchase key
@@ -263,7 +253,6 @@ function renderIndexHtml(errorMsg = null) {
                 <div class="video-wrapper">
                     <iframe id="tutorialVideo" src="https://player.vimeo.com/video/1203472119" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
                 </div>
-                <!-- Zoom Button -->
                 <button type="button" class="zoom-btn" onclick="openFullscreen()">
                     <i class="fas fa-expand-arrows-alt"></i> Zoom / Fullscreen
                 </button>
@@ -274,7 +263,6 @@ function renderIndexHtml(errorMsg = null) {
             </button>
         </div>
 
-        <!-- STEP 2: PLAN SELECTION FORM -->
         <form method="POST" action="/" id="payForm">
             <p style="font-size: 13px; color: #8a95a5; margin-bottom: 10px; font-weight: 500; text-transform: uppercase;">Select Premium Plan</p>
             <div class="plan-selector">${plansHtml}</div>
@@ -291,7 +279,6 @@ function renderIndexHtml(errorMsg = null) {
     </div>
     
     <script>
-        // Fullscreen Logic
         function openFullscreen() {
             var iframe = document.getElementById("tutorialVideo");
             if (iframe.requestFullscreen) {
@@ -303,13 +290,11 @@ function renderIndexHtml(errorMsg = null) {
             }
         }
 
-        // Transition from Video to Plan Selection
         document.getElementById('showPlansBtn')?.addEventListener('click', function() {
             document.getElementById('introSection').style.display = 'none';
             document.getElementById('payForm').style.display = 'block';
         });
 
-        // Plan Selection Logic
         document.querySelectorAll('.plan-option').forEach(option => {
             option.addEventListener('click', function() {
                 document.querySelectorAll('.plan-option').forEach(opt => opt.classList.remove('selected'));
@@ -318,7 +303,6 @@ function renderIndexHtml(errorMsg = null) {
             });
         });
 
-        // Loading State on Payment Submission
         document.getElementById('payForm').addEventListener('submit', function() {
             var btn = document.getElementById('payBtn');
             btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting Gateway...';
@@ -330,5 +314,96 @@ function renderIndexHtml(errorMsg = null) {
 </html>`;
 }
 
+function renderSuccessHtml(orderId, cardKey) {
+    let orderShort = String(orderId).substring(0, 8);
+    let dynamicContent = '';
+    let jsAlerts = '';
+
+    if (cardKey === "WAITING") {
+        dynamicContent = `
+            <div class="status-box" style="color: #eab308;">
+                <i class="fas fa-circle-notch fa-spin"></i> Generating License Key...
+            </div>
+            <button class="btn-action btn-refresh" onclick="location.reload();">
+                <i class="fas fa-sync-alt"></i> Refresh Status
+            </button>
+        `;
+    } else if (cardKey === "ERROR") {
+        dynamicContent = `
+            <div class="status-box" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3);"><i class="fas fa-times-circle"></i> Database Error Occurred</div>
+        `;
+    } else {
+        dynamicContent = `
+            <div class="status-box" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);"><i class="fas fa-check-circle"></i> Key Generated Successfully</div>
+            <div class="alert-box">⚠️ <strong>Important:</strong> Please save this premium key in a safe place (Notes/WhatsApp) for future use.<br><br>For any issues, contact <strong>@SellerOfKing</strong> on Telegram.</div>
+            <div class="key-container"><div class="key-text" id="myKey">${cardKey}</div></div>
+            
+            <button class="btn-action" id="copyBtn" onclick="copyKey()"><i class="fas fa-copy"></i> Copy & Paste On Your App</button>
+        `;
+        jsAlerts = `
+        window.onload = function() { setTimeout(function() { alert("✅ KEY GENERATED SUCCESSFULLY!\\n\\n⚠️ IMPORTANT: Please copy and save your premium key somewhere safe for future use.\\n\\n📞 Any issue? Contact on Telegram: @SellerOfKing"); }, 500); };
+        `;
+    }
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Payment Successful</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #0f1319; color: #ffffff; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 15px; }
+        .payment-card { background-color: #181d29; width: 100%; max-width: 400px; border-radius: 16px; padding: 25px 20px; border: 1px solid #232a3b; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4); }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
+        .brand { display: flex; align-items: center; gap: 12px; }
+        .brand-icon { width: 45px; height: 45px; background: rgba(16, 185, 129, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .brand-text h3 { margin: 0; font-size: 16px; font-weight: 600; }
+        .brand-text p { margin: 0; font-size: 13px; color: #8a95a5; margin-top: 2px; }
+        .tag { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); padding: 6px 10px; border-radius: 8px; font-size: 12px; color: #8a95a5; letter-spacing: 0.5px;}
+        .divider { height: 3px; background: #10b981; border-radius: 2px; margin: 20px 0; width: 100%; box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);}
+        .status-box { background: #131722; border: 1px solid #232a3b; padding: 15px; border-radius: 10px; display: flex; align-items: center; gap: 10px; font-size: 14px; margin-bottom: 20px; }
+        .alert-box { background: rgba(234, 179, 8, 0.1); border: 1px solid rgba(234, 179, 8, 0.3); color: #eab308; padding: 12px; border-radius: 8px; font-size: 13px; text-align: center; margin-bottom: 15px; line-height: 1.5;}
+        .key-container { background: #0f1319; border: 1px dashed #3b82f6; padding: 20px; border-radius: 12px; text-align: center; margin-bottom: 20px; }
+        .key-text { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 2px; word-break: break-all; }
+        
+        .btn-action { background-color: #3b82f6; color: #fff; border: none; padding: 15px; font-size: 15px; font-weight: 600; border-radius: 10px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; }
+        .btn-action:active { transform: scale(0.98); }
+        .btn-refresh { background-color: #232a3b; color: #fff; margin-top: 10px; }
+
+        .contact-us { text-align: center; margin-top: 25px; font-size: 13px; color: #8a95a5; }
+        .contact-us a { color: #3b82f6; text-decoration: none; font-weight: 600; }
+        .footer { text-align: center; margin-top: 15px; font-size: 12px; color: #8a95a5; display: flex; justify-content: space-between; align-items: center; padding: 0 5px;}
+        .footer .secure { color: #10b981; display: flex; align-items: center; gap: 5px; }
+    </style>
+</head>
+<body>
+    <div class="payment-card">
+        <div class="header">
+            <div class="brand"><div class="brand-icon"><i class="fas fa-check" style="color: #10b981; font-size: 20px;"></i></div><div class="brand-text"><h3>Trust</h3><p>Payment Success</p></div></div>
+            <div class="tag">#${orderShort}</div>
+        </div>
+        <div class="divider"></div>
+        ${dynamicContent}
+        <div class="contact-us">Any issue? Contact <a href="https://t.me/SellerOfKing" target="_blank"><i class="fab fa-telegram"></i> @SellerOfKing</a></div>
+        <div class="footer"><div class="secure"><i class="fas fa-lock"></i> 100% Secure</div><div>Powered by Trust</div></div>
+    </div>
+    <script>
+        ${jsAlerts}
+        function copyKey() {
+            var keyText = document.getElementById("myKey").innerText;
+            navigator.clipboard.writeText(keyText).then(function() {
+                var btn = document.getElementById('copyBtn');
+                btn.innerHTML = '<i class="fas fa-check-double"></i> Copied to Clipboard!';
+                btn.style.backgroundColor = '#10b981';
+                alert("✅ Key Copied!\\n\\nPlease save it securely. If you face any issues, message @SellerOfKing on Telegram.");
+                setTimeout(function() { btn.innerHTML = '<i class="fas fa-copy"></i> Copy & Paste On Your App'; btn.style.backgroundColor = '#3b82f6'; }, 2000);
+            }).catch(function(err) { alert("Failed to copy. Please select the text and copy manually."); });
+        }
+    </script>
+</body>
+</html>`;
+}
 
 module.exports = app;
