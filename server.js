@@ -7,22 +7,26 @@ require('dotenv').config();
 const app = express();
 app.use(cookieParser());
 
+// Raw payload read karna HMAC check ke liye zaroori hai
 app.use(express.json({
     verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); }
 }));
 app.use(express.urlencoded({ extended: true }));
 
+// ==========================================
+// CENTRAL CONFIGURATION (Dynamic from Vercel Env)
+// ==========================================
 let PLAN_RATES = {};
 try {
+    // Vercel me {"50":1, "300":15, "500":30} JSON string format me pass hoga
     PLAN_RATES = JSON.parse(process.env.PLAN_RATES || '{"50":1,"300":15,"500":30}');
 } catch (e) {
     console.error("PLAN_RATES environment variable is not valid JSON.");
 }
 
-const PAYINDIA_API_KEY = process.env.API_KEY;
-const PAYINDIA_API_SECRET = process.env.API_SECRET;
-const PAYINDIA_BASE = 'https://payment.techbloggers.in/api';
-
+// ==========================================
+// 1. INDEX PAGE & PAYMENT LOGIC
+// ==========================================
 app.get('/', (req, res) => {
     res.send(renderIndexHtml());
 });
@@ -30,51 +34,42 @@ app.get('/', (req, res) => {
 app.post('/', async (req, res) => {
     try {
         const selectedAmount = req.body.amount;
-
+        
+        // Security Check: Only allow amounts defined in Vercel Env
         if (!PLAN_RATES.hasOwnProperty(selectedAmount)) {
             return res.send(renderIndexHtml("Please select a valid plan."));
         }
 
-        const orderId = 'ORD_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5).toUpperCase();
-
-        const payload = {
-            amount: parseFloat(selectedAmount).toFixed(2),
-            order_id: orderId,
-            customer_name: 'Customer',
-            callback_url: req.protocol + '://' + req.get('host') + '/success?order_id=' + orderId
-        };
-
-        const response = await fetch(PAYINDIA_BASE + '/create-order', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-API-Key': PAYINDIA_API_KEY,
-                'X-API-Secret': PAYINDIA_API_SECRET
-            },
-            body: JSON.stringify(payload)
-        });
-
+        const successUrl = encodeURIComponent(process.env.SUCCESS_URL);
+        const apiUrl = `https://xwalletbot.shop/wallet/getway/pay.php?key=${process.env.API_KEY}&amount=${selectedAmount}&redirect_url=${successUrl}`;
+        
+        const response = await fetch(apiUrl);
         const data = await response.json();
 
-        if (data.status === 'success' && data.data.payment_url) {
-            res.cookie('my_order_id', orderId, { maxAge: 900000, httpOnly: true });
+        if (data.payment_link && data.order_id) {
+            res.cookie('my_order_id', data.order_id, { maxAge: 900000, httpOnly: true });
             res.cookie('my_order_amount', selectedAmount, { maxAge: 900000, httpOnly: true });
-            res.redirect(data.data.payment_url);
+            res.cookie('my_qr_code', data.qr_code_id || '', { maxAge: 900000, httpOnly: true });
+            res.redirect(data.payment_link);
         } else {
             res.send(renderIndexHtml("Payment link generation failed. Please try again."));
         }
     } catch (error) {
-        console.error("PayIndia error:", error);
-        res.send(renderIndexHtml("Unable to connect to payment gateway."));
+        res.send(renderIndexHtml("Unable to connect to the server. Gateway might be down."));
     }
 });
 
+// ==========================================
+// KEY GENERATION LOCK (Database Level Atomic Insert)
+// ==========================================
 async function generateKeyIfNeeded(orderId, duration) {
     const markNote = `OrderID: ${orderId}`;
 
     try {
+        // Step 1: Generate a random key first
         const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
-
+        
+        // Step 2: Atomic Query
         const insertQuery = `
             INSERT INTO single_card (card, value, type, mark, usable, soft_id)
             SELECT ?, ?, 3, ?, 1, ?
@@ -85,29 +80,33 @@ async function generateKeyIfNeeded(orderId, duration) {
         `;
 
         const [result] = await db.execute(insertQuery, [
-            newCard,
-            duration,
-            markNote,
-            process.env.SOFT_ID,
+            newCard, 
+            duration, 
+            markNote, 
+            process.env.SOFT_ID, 
             markNote
         ]);
 
         if (result.affectedRows > 0) {
-            console.log(`SUCCESS: Key generated. Plan: ${duration} Days | Key: ${newCard} | Order: ${orderId}`);
+            console.log(`SUCCESS 💰: Key generated. Plan: ${duration} Days | Key: ${newCard} | Order: ${orderId}`);
         } else {
-            console.log(`SKIPPED: OrderID ${orderId} already exists. Duplicate prevented.`);
+            console.log(`SKIPPED ⏩: OrderID ${orderId} already exists in database. Duplicate prevented.`);
         }
+
     } catch (error) {
-        console.error("DB ERROR:", error.message);
+        console.error("DB ERROR ❌:", error.message);
     }
 }
 
+// ==========================================
+// 3. SUCCESS PAGE
+// ==========================================
 app.get('/success', async (req, res) => {
     let orderId = req.cookies.my_order_id || req.query.order_id || '';
     const isPaymentSuccess = req.query.status === 'success';
 
     if (!orderId) {
-        return res.send("<div style='background:#0f1319; color:#fff; text-align:center; padding:50px; font-family:sans-serif; height:100vh;'><h2>Invalid Access</h2></div>");
+        return res.send("<div style='background:#0f1319; color:#fff; text-align:center; padding:50px; font-family:sans-serif; height:100vh;'><h2>❌ Invalid Access</h2></div>");
     }
 
     if (!req.cookies.my_order_id) {
@@ -117,34 +116,29 @@ app.get('/success', async (req, res) => {
     const markNote = `OrderID: ${orderId}`;
 
     if (isPaymentSuccess) {
-        let verified = false;
-        try {
-            const checkRes = await fetch(PAYINDIA_BASE + '/check-status', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-API-Key': PAYINDIA_API_KEY,
-                    'X-API-Secret': PAYINDIA_API_SECRET
-                },
-                body: JSON.stringify({ order_id: orderId })
-            });
-            const checkData = await checkRes.json();
-            if (checkData.status === 'success' && checkData.data.payment_status === 'success') {
-                verified = true;
-            }
-        } catch (e) {
-            console.error("PayIndia verification failed:", e.message);
+        const amount = parseFloat(req.cookies.my_order_amount || 0);
+        const qrCodeId = req.cookies.my_qr_code || '';
+        let duration = 0;
+        if (PLAN_RATES.hasOwnProperty(amount)) {
+            duration = PLAN_RATES[amount];
         }
 
-        if (verified) {
-            const amount = parseFloat(req.cookies.my_order_amount || 0);
-            let duration = 0;
-            if (PLAN_RATES.hasOwnProperty(amount)) {
-                duration = PLAN_RATES[amount];
+        let verified = false;
+        if (qrCodeId && duration > 0) {
+            try {
+                const checkUrl = `https://xwalletbot.shop/wallet/getway/check.php?code=${qrCodeId}`;
+                const checkRes = await fetch(checkUrl);
+                const checkData = await checkRes.json();
+                if (checkData.status === 'TXN_SUCCESS') {
+                    verified = true;
+                }
+            } catch (e) {
+                console.error("Gateway verification failed:", e.message);
             }
-            if (duration > 0) {
-                await generateKeyIfNeeded(orderId, duration);
-            }
+        }
+
+        if (verified && duration > 0) {
+            await generateKeyIfNeeded(orderId, duration);
         }
     }
 
@@ -165,11 +159,15 @@ app.get('/success', async (req, res) => {
     res.send(renderSuccessHtml(orderId, cardKey));
 });
 
+// ==========================================
+// EXACT HTML/CSS UI TEMPLATES
+// ==========================================
 function renderIndexHtml(errorMsg = null) {
     let errorHtml = errorMsg ? `<div class="error-msg"><i class="fas fa-exclamation-triangle"></i> ${errorMsg}</div>` : '';
     let plansHtml = '';
     let isFirst = true;
-
+    
+    // Dynamic looping of plans
     for (const [price, days] of Object.entries(PLAN_RATES)) {
         let title = (days === 1) ? "1 Day" : `${days} Days`;
         plansHtml += `
@@ -180,6 +178,9 @@ function renderIndexHtml(errorMsg = null) {
         </label>`;
         isFirst = false;
     }
+
+    let introDisplay = errorMsg ? 'none' : 'flex';
+    let formDisplay = errorMsg ? 'block' : 'none';
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -198,13 +199,22 @@ function renderIndexHtml(errorMsg = null) {
         .brand-text h3 { margin: 0; font-size: 16px; font-weight: 600; }
         .brand-text p { margin: 0; font-size: 13px; color: #8a95a5; margin-top: 2px; }
         .tag { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); padding: 6px 12px; border-radius: 8px; font-size: 12px; color: #8a95a5; }
-
-        #payForm { display: block; }
-        .intro-section { display: flex; flex-direction: column; gap: 15px; margin-bottom: 10px; }
+        
+        .intro-section { display: ${introDisplay}; flex-direction: column; gap: 15px; margin-bottom: 10px; }
         .animated-title { text-align: center; font-size: 15px; font-weight: 600; color: #10b981; animation: pulse 2s infinite; display: flex; justify-content: center; align-items: center; gap: 8px; }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.02); } 100% { opacity: 1; transform: scale(1); } }
-        .video-wrapper { position: relative; padding-bottom: 177.78%; height: 0; border-radius: 12px; overflow: hidden; border: 1px solid #232a3b; background: #000; }
+        
+        .video-box { max-width: 220px; margin: 0 auto; width: 100%; } 
+        .video-wrapper { position: relative; padding-bottom: 177.77%; height: 0; border-radius: 12px; overflow: hidden; border: 1px solid #3b82f6; background: #000; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
         .video-wrapper iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        
+        .zoom-btn { background: #1f2937; color: #fff; border: 1px solid #374151; padding: 10px; font-size: 13px; font-weight: 600; border-radius: 8px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 12px; }
+        .zoom-btn:hover { background: #374151; border-color: #10b981; color: #10b981; }
+
+        .proceed-to-plans-btn { background-color: #3b82f6; color: #fff; border: none; padding: 15px; font-size: 15px; font-weight: 600; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 10px; }
+        .proceed-to-plans-btn:active { transform: scale(0.98); }
+        
+        #payForm { display: ${formDisplay}; }
         .plan-selector { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
         .plan-option { display: flex; justify-content: space-between; align-items: center; background: #131722; border: 1px solid #232a3b; padding: 15px; border-radius: 10px; cursor: pointer; transition: 0.2s; }
         .plan-option:hover { border-color: #3b82f6; }
@@ -215,7 +225,7 @@ function renderIndexHtml(errorMsg = null) {
         .divider { height: 3px; background: #3b82f6; border-radius: 2px; margin: 25px 0; width: 100%; box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);}
         .pay-btn { background-color: #ffffff; color: #000000; border: none; padding: 16px; font-size: 16px; font-weight: 700; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 10px; }
         .pay-btn:active { transform: scale(0.98); }
-
+        
         .contact-us { text-align: center; margin-top: 20px; font-size: 13px; color: #8a95a5; }
         .contact-us a { color: #3b82f6; text-decoration: none; font-weight: 600; }
         .footer { text-align: center; margin-top: 15px; font-size: 12px; color: #8a95a5; display: flex; justify-content: space-between; align-items: center; padding: 0 5px;}
@@ -233,14 +243,24 @@ function renderIndexHtml(errorMsg = null) {
             <div class="tag">Premium</div>
         </div>
         ${errorHtml}
-
-        <div class="intro-section">
+        
+        <div id="introSection" class="intro-section">
             <div class="animated-title">
                 <i class="fas fa-play-circle"></i> How to purchase key
             </div>
-            <div class="video-wrapper">
-                <iframe src="https://player.vimeo.com/video/1203472119" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+            
+            <div class="video-box">
+                <div class="video-wrapper">
+                    <iframe id="tutorialVideo" src="https://player.vimeo.com/video/1203472119" frameborder="0" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>
+                </div>
+                <button type="button" class="zoom-btn" onclick="openFullscreen()">
+                    <i class="fas fa-expand-arrows-alt"></i> Zoom / Fullscreen
+                </button>
             </div>
+
+            <button type="button" class="proceed-to-plans-btn" id="showPlansBtn">
+                Proceed to Purchase Key <i class="fas fa-arrow-right"></i>
+            </button>
         </div>
 
         <form method="POST" action="/" id="payForm">
@@ -257,8 +277,24 @@ function renderIndexHtml(errorMsg = null) {
         </div>
         <div class="footer"><div class="secure"><i class="fas fa-lock"></i> 100% Secure</div><div>Powered by Trust</div></div>
     </div>
-
+    
     <script>
+        function openFullscreen() {
+            var iframe = document.getElementById("tutorialVideo");
+            if (iframe.requestFullscreen) {
+                iframe.requestFullscreen();
+            } else if (iframe.webkitRequestFullscreen) { /* Safari */
+                iframe.webkitRequestFullscreen();
+            } else if (iframe.msRequestFullscreen) { /* IE11 */
+                iframe.msRequestFullscreen();
+            }
+        }
+
+        document.getElementById('showPlansBtn')?.addEventListener('click', function() {
+            document.getElementById('introSection').style.display = 'none';
+            document.getElementById('payForm').style.display = 'block';
+        });
+
         document.querySelectorAll('.plan-option').forEach(option => {
             option.addEventListener('click', function() {
                 document.querySelectorAll('.plan-option').forEach(opt => opt.classList.remove('selected'));
@@ -301,6 +337,7 @@ function renderSuccessHtml(orderId, cardKey) {
             <div class="status-box" style="color: #10b981; border-color: rgba(16, 185, 129, 0.3);"><i class="fas fa-check-circle"></i> Key Generated Successfully</div>
             <div class="alert-box">⚠️ <strong>Important:</strong> Please save this premium key in a safe place (Notes/WhatsApp) for future use.<br><br>For any issues, contact <strong>@SellerOfKing</strong> on Telegram.</div>
             <div class="key-container"><div class="key-text" id="myKey">${cardKey}</div></div>
+            
             <button class="btn-action" id="copyBtn" onclick="copyKey()"><i class="fas fa-copy"></i> Copy & Paste On Your App</button>
         `;
         jsAlerts = `
@@ -330,9 +367,11 @@ function renderSuccessHtml(orderId, cardKey) {
         .alert-box { background: rgba(234, 179, 8, 0.1); border: 1px solid rgba(234, 179, 8, 0.3); color: #eab308; padding: 12px; border-radius: 8px; font-size: 13px; text-align: center; margin-bottom: 15px; line-height: 1.5;}
         .key-container { background: #0f1319; border: 1px dashed #3b82f6; padding: 20px; border-radius: 12px; text-align: center; margin-bottom: 20px; }
         .key-text { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 2px; word-break: break-all; }
+        
         .btn-action { background-color: #3b82f6; color: #fff; border: none; padding: 15px; font-size: 15px; font-weight: 600; border-radius: 10px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; }
         .btn-action:active { transform: scale(0.98); }
         .btn-refresh { background-color: #232a3b; color: #fff; margin-top: 10px; }
+
         .contact-us { text-align: center; margin-top: 25px; font-size: 13px; color: #8a95a5; }
         .contact-us a { color: #3b82f6; text-decoration: none; font-weight: 600; }
         .footer { text-align: center; margin-top: 15px; font-size: 12px; color: #8a95a5; display: flex; justify-content: space-between; align-items: center; padding: 0 5px;}
@@ -368,3 +407,4 @@ function renderSuccessHtml(orderId, cardKey) {
 }
 
 module.exports = app;
+
