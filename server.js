@@ -52,13 +52,12 @@ app.post('/', async (req, res) => {
             return res.send(renderIndexHtml("Please select a valid plan."));
         }
 
+        const exactAmount = app.plans.hasOwnProperty(selectedAmount) ? Number(selectedAmount) : parseFloat(selectedAmount);
         const orderId = 'ORD_' + Date.now();
         const duration = app.plans[selectedAmount];
         const customerName = req.body.customer_name || 'Customer';
 
         const callbackUrl = `${req.protocol}://${req.get('host')}/success?order_id=${orderId}&amount=${exactAmount}&duration=${duration}&soft_id=${app.soft_id}`;
-
-        const exactAmount = app.plans.hasOwnProperty(selectedAmount) ? Number(selectedAmount) : parseFloat(selectedAmount);
 
         const payload = {
             amount: exactAmount.toFixed(2),
@@ -77,7 +76,12 @@ app.post('/', async (req, res) => {
             body: JSON.stringify(payload)
         });
 
-        const data = await response.json();
+        let data;
+        try {
+            data = await response.json();
+        } catch (e) {
+            return res.send(renderIndexHtml("Gateway error: Invalid response from server (check API keys)."));
+        }
 
         if (data.status === 'success' && data.data.payment_url) {
             res.cookie('my_order_id', orderId, { maxAge: 900000, httpOnly: true });
@@ -85,10 +89,11 @@ app.post('/', async (req, res) => {
             res.cookie('my_soft_id', app.soft_id, { maxAge: 900000, httpOnly: true });
             res.redirect(data.data.payment_url);
         } else {
-            res.send(renderIndexHtml("Payment link generation failed. Please try again."));
+            res.send(renderIndexHtml("Payment failed: " + (data.error || data.message || "Gateway rejected request.")));
         }
     } catch (error) {
-        res.send(renderIndexHtml("Unable to connect to the server. Gateway might be down."));
+        console.error("ORDER ERROR:", error.message);
+        res.send(renderIndexHtml("Network error: Cannot reach payment gateway. Check your server internet connection."));
     }
 });
 
