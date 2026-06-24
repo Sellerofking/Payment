@@ -56,10 +56,12 @@ app.post('/', async (req, res) => {
         const duration = app.plans[selectedAmount];
         const customerName = req.body.customer_name || 'Customer';
 
-        const callbackUrl = `${req.protocol}://${req.get('host')}/success?order_id=${orderId}&amount=${selectedAmount}&duration=${duration}&soft_id=${app.soft_id}`;
+        const callbackUrl = `${req.protocol}://${req.get('host')}/success?order_id=${orderId}&amount=${exactAmount}&duration=${duration}&soft_id=${app.soft_id}`;
+
+        const exactAmount = app.plans.hasOwnProperty(selectedAmount) ? Number(selectedAmount) : parseFloat(selectedAmount);
 
         const payload = {
-            amount: parseFloat(selectedAmount).toFixed(2),
+            amount: exactAmount.toFixed(2),
             order_id: orderId,
             customer_name: customerName,
             callback_url: callbackUrl
@@ -211,7 +213,7 @@ function renderAppSelectionHtml(apps) {
     return `
     <div id="appSection" style="display:none;" class="app-section">
         <p style="font-size: 13px; color: #8a95a5; margin-bottom: 15px; font-weight: 500; text-transform: uppercase; text-align:center;">
-            <i class="fas fa-hand-pointer"></i> Choose Your Attendance App
+            <i class="fas fa-hand-point-down"></i>  Choose Your Attendance App  <i class="fas fa-hand-point-down"></i>
         </p>
         <div class="app-grid">${cards}</div>
     </div>
@@ -348,11 +350,10 @@ function renderIndexHtml(errorMsg = null) {
             <div id="planHeader" class="plan-header" style="display:none;">
                 <div class="plan-header-icon"><i class="fas fa-cube"></i></div>
                 <div class="plan-header-text">
-                    <h4 id="planAppName"></h4>
-                    <p>Select your premium plan</p>
+                    <h4 id="planAppName" style="font-size: 16px;"></h4>
+                    <p style="font-size: 13px; font-weight: 500;">Select your premium plan</p>
                 </div>
             </div>
-            <p style="font-size: 13px; color: #8a95a5; margin-bottom: 10px; font-weight: 500; text-transform: uppercase;">Select Premium Plan</p>
             <div id="planSelector" class="plan-selector">${plansHtml}</div>
             <div class="divider"></div>
             <button type="submit" name="pay_now" class="pay-btn" id="payBtn">
