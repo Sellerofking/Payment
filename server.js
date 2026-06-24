@@ -19,6 +19,18 @@ try {
     console.error("PLAN_RATES environment variable is not valid JSON.");
 }
 
+const APPS = (() => {
+    try {
+        return JSON.parse(process.env.APPS || '[]');
+    } catch (e) {
+        return [];
+    }
+})();
+
+if (APPS.length === 0) {
+    APPS.push({ soft_id: parseInt(process.env.SOFT_ID) || 0, name: "App", plans: PLAN_RATES });
+}
+
 const PAYINDIA_API_URL = 'https://payment.techbloggers.in/api';
 const API_KEY = process.env.API_KEY;
 const API_SECRET = process.env.API_SECRET;
@@ -30,16 +42,21 @@ app.get('/', (req, res) => {
 app.post('/', async (req, res) => {
     try {
         const selectedAmount = req.body.amount;
-        
-        if (!PLAN_RATES.hasOwnProperty(selectedAmount)) {
+        const selectedSoftId = req.body.soft_id || '';
+
+        const app = APPS.find(a => a.soft_id == selectedSoftId);
+        if (!app) {
+            return res.send(renderIndexHtml("Please select a valid app."));
+        }
+        if (!app.plans.hasOwnProperty(selectedAmount)) {
             return res.send(renderIndexHtml("Please select a valid plan."));
         }
 
         const orderId = 'ORD_' + Date.now();
-        const duration = PLAN_RATES[selectedAmount];
+        const duration = app.plans[selectedAmount];
         const customerName = req.body.customer_name || 'Customer';
 
-        const callbackUrl = `${req.protocol}://${req.get('host')}/success?order_id=${orderId}&amount=${selectedAmount}&duration=${duration}`;
+        const callbackUrl = `${req.protocol}://${req.get('host')}/success?order_id=${orderId}&amount=${selectedAmount}&duration=${duration}&soft_id=${app.soft_id}`;
 
         const payload = {
             amount: parseFloat(selectedAmount).toFixed(2),
@@ -63,6 +80,7 @@ app.post('/', async (req, res) => {
         if (data.status === 'success' && data.data.payment_url) {
             res.cookie('my_order_id', orderId, { maxAge: 900000, httpOnly: true });
             res.cookie('my_order_amount', selectedAmount, { maxAge: 900000, httpOnly: true });
+            res.cookie('my_soft_id', app.soft_id, { maxAge: 900000, httpOnly: true });
             res.redirect(data.data.payment_url);
         } else {
             res.send(renderIndexHtml("Payment link generation failed. Please try again."));
@@ -72,8 +90,9 @@ app.post('/', async (req, res) => {
     }
 });
 
-async function generateKeyIfNeeded(orderId, duration) {
+async function generateKeyIfNeeded(orderId, duration, softId) {
     const markNote = `OrderID: ${orderId}`;
+    const targetSoftId = softId || parseInt(process.env.SOFT_ID) || 0;
 
     try {
         const newCard = crypto.randomBytes(8).toString('hex').toUpperCase().match(/.{1,4}/g).join('-');
@@ -91,7 +110,7 @@ async function generateKeyIfNeeded(orderId, duration) {
             newCard, 
             duration, 
             markNote, 
-            process.env.SOFT_ID, 
+            targetSoftId, 
             markNote
         ]);
 
@@ -116,6 +135,11 @@ app.get('/success', async (req, res) => {
 
     if (!req.cookies.my_order_id) {
         res.cookie('my_order_id', orderId, { maxAge: 900000, httpOnly: true });
+    }
+
+    let softId = req.cookies.my_soft_id || req.query.soft_id || '';
+    if (!softId && !req.cookies.my_soft_id) {
+        res.cookie('my_soft_id', softId, { maxAge: 900000, httpOnly: true });
     }
 
     const markNote = `OrderID: ${orderId}`;
@@ -145,11 +169,12 @@ app.get('/success', async (req, res) => {
         if (verified) {
             const amount = parseFloat(req.cookies.my_order_amount || req.query.amount || 0);
             let duration = req.query.duration ? parseInt(req.query.duration) : 0;
-            if (!duration && PLAN_RATES.hasOwnProperty(amount)) {
-                duration = PLAN_RATES[amount];
+            const app = APPS.find(a => a.soft_id == softId);
+            if (!duration && app && app.plans.hasOwnProperty(amount)) {
+                duration = app.plans[amount];
             }
             if (duration > 0) {
-                await generateKeyIfNeeded(orderId, duration);
+                await generateKeyIfNeeded(orderId, duration, softId);
             }
         }
     }
@@ -174,12 +199,31 @@ app.get('/success', async (req, res) => {
 // ==========================================
 // EXACT HTML/CSS UI TEMPLATES
 // ==========================================
+function renderAppSelectionHtml(apps) {
+    let cards = apps.map((app, i) => `
+        <div class="app-card" data-index="${i}">
+            <div class="app-icon"><i class="fas fa-cube"></i></div>
+            <div class="app-name">${app.name}</div>
+            <div class="app-sub"><i class="fas fa-chevron-right"></i> Select</div>
+        </div>
+    `).join('');
+
+    return `
+    <div id="appSection" style="display:none;" class="app-section">
+        <p style="font-size: 13px; color: #8a95a5; margin-bottom: 15px; font-weight: 500; text-transform: uppercase; text-align:center;">
+            <i class="fas fa-hand-pointer"></i> Choose Your Attendance App
+        </p>
+        <div class="app-grid">${cards}</div>
+    </div>
+    <input type="hidden" name="soft_id" id="softIdInput" value="">
+    `;
+}
+
 function renderIndexHtml(errorMsg = null) {
     let errorHtml = errorMsg ? `<div class="error-msg"><i class="fas fa-exclamation-triangle"></i> ${errorMsg}</div>` : '';
     let plansHtml = '';
     let isFirst = true;
     
-    // Dynamic looping of plans
     for (const [price, days] of Object.entries(PLAN_RATES)) {
         let title = (days === 1) ? "1 Day" : `${days} Days`;
         plansHtml += `
@@ -190,6 +234,8 @@ function renderIndexHtml(errorMsg = null) {
         </label>`;
         isFirst = false;
     }
+
+    let appSelectionHtml = renderAppSelectionHtml(APPS);
 
     let introDisplay = errorMsg ? 'none' : 'flex';
     let formDisplay = errorMsg ? 'block' : 'none';
@@ -225,7 +271,19 @@ function renderIndexHtml(errorMsg = null) {
 
         .proceed-to-plans-btn { background-color: #3b82f6; color: #fff; border: none; padding: 15px; font-size: 15px; font-weight: 600; border-radius: 12px; width: 100%; cursor: pointer; transition: 0.2s ease; display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 10px; }
         .proceed-to-plans-btn:active { transform: scale(0.98); }
+
+        .app-section { margin-bottom: 10px; }
+        .app-grid { display: flex; flex-direction: column; gap: 12px; margin-top: 5px; }
+        .app-card { display: flex; align-items: center; gap: 14px; background: #131722; border: 1px solid #232a3b; padding: 16px 15px; border-radius: 12px; cursor: pointer; transition: 0.2s; }
+        .app-card:hover { border-color: #3b82f6; background: rgba(59, 130, 246, 0.08); }
+        .app-card:active { transform: scale(0.98); }
+        .app-icon { width: 42px; height: 42px; background: rgba(59,130,246,0.12); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; color: #3b82f6; flex-shrink: 0; }
+        .app-name { flex: 1; font-weight: 600; font-size: 15px; }
+        .app-sub { font-size: 12px; color: #8a95a5; display: flex; align-items: center; gap: 4px; }
         
+        .back-btn { background: none; border: none; color: #8a95a5; font-size: 13px; cursor: pointer; padding: 5px 0; margin-bottom: 10px; display: flex; align-items: center; gap: 5px; }
+        .back-btn:hover { color: #fff; }
+
         #payForm { display: ${formDisplay}; }
         .plan-selector { display: flex; flex-direction: column; gap: 12px; margin-bottom: 20px; }
         .plan-option { display: flex; justify-content: space-between; align-items: center; background: #131722; border: 1px solid #232a3b; padding: 15px; border-radius: 10px; cursor: pointer; transition: 0.2s; }
@@ -243,6 +301,12 @@ function renderIndexHtml(errorMsg = null) {
         .footer { text-align: center; margin-top: 15px; font-size: 12px; color: #8a95a5; display: flex; justify-content: space-between; align-items: center; padding: 0 5px;}
         .footer .secure { color: #10b981; display: flex; align-items: center; gap: 5px; }
         .error-msg { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #ef4444; padding: 12px; border-radius: 8px; font-size: 14px; margin-bottom: 15px; text-align: center; }
+        
+        .plan-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .plan-header-icon { width: 36px; height: 36px; background: rgba(16,185,129,0.12); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; color: #10b981; }
+        .plan-header-text { flex: 1; }
+        .plan-header-text h4 { margin: 0; font-size: 14px; font-weight: 600; }
+        .plan-header-text p { margin: 0; font-size: 11px; color: #8a95a5; }
     </style>
 </head>
 <body>
@@ -275,9 +339,21 @@ function renderIndexHtml(errorMsg = null) {
             </button>
         </div>
 
+        ${appSelectionHtml}
+
         <form method="POST" action="/" id="payForm">
+            <button type="button" class="back-btn" id="backToAppsBtn" style="display:none;">
+                <i class="fas fa-arrow-left"></i> Change App
+            </button>
+            <div id="planHeader" class="plan-header" style="display:none;">
+                <div class="plan-header-icon"><i class="fas fa-cube"></i></div>
+                <div class="plan-header-text">
+                    <h4 id="planAppName"></h4>
+                    <p>Select your premium plan</p>
+                </div>
+            </div>
             <p style="font-size: 13px; color: #8a95a5; margin-bottom: 10px; font-weight: 500; text-transform: uppercase;">Select Premium Plan</p>
-            <div class="plan-selector">${plansHtml}</div>
+            <div id="planSelector" class="plan-selector">${plansHtml}</div>
             <div class="divider"></div>
             <button type="submit" name="pay_now" class="pay-btn" id="payBtn">
                 <i class="fas fa-qrcode"></i> Proceed to Pay & Get Key
@@ -291,28 +367,71 @@ function renderIndexHtml(errorMsg = null) {
     </div>
     
     <script>
+        var apps = ${JSON.stringify(APPS)};
+        var selectedApp = null;
+
         function openFullscreen() {
             var iframe = document.getElementById("tutorialVideo");
             if (iframe.requestFullscreen) {
                 iframe.requestFullscreen();
-            } else if (iframe.webkitRequestFullscreen) { /* Safari */
+            } else if (iframe.webkitRequestFullscreen) {
                 iframe.webkitRequestFullscreen();
-            } else if (iframe.msRequestFullscreen) { /* IE11 */
+            } else if (iframe.msRequestFullscreen) {
                 iframe.msRequestFullscreen();
             }
         }
 
         document.getElementById('showPlansBtn')?.addEventListener('click', function() {
             document.getElementById('introSection').style.display = 'none';
-            document.getElementById('payForm').style.display = 'block';
+            document.getElementById('appSection').style.display = 'block';
         });
 
-        document.querySelectorAll('.plan-option').forEach(option => {
-            option.addEventListener('click', function() {
-                document.querySelectorAll('.plan-option').forEach(opt => opt.classList.remove('selected'));
-                this.classList.add('selected');
-                this.querySelector('input[type="radio"]').checked = true;
+        document.querySelectorAll('.app-card').forEach(function(card) {
+            card.addEventListener('click', function() {
+                var idx = parseInt(this.getAttribute('data-index'));
+                selectedApp = apps[idx];
+                document.getElementById('softIdInput').value = selectedApp.soft_id;
+                showPlansForApp(selectedApp);
             });
+        });
+
+        function showPlansForApp(app) {
+            document.getElementById('appSection').style.display = 'none';
+            document.getElementById('payForm').style.display = 'block';
+            document.getElementById('backToAppsBtn').style.display = 'flex';
+            document.getElementById('planHeader').style.display = 'flex';
+            document.getElementById('planAppName').innerText = app.name;
+
+            var container = document.getElementById('planSelector');
+            var plans = app.plans;
+            var keys = Object.keys(plans);
+            var html = '';
+            for (var i = 0; i < keys.length; i++) {
+                var price = keys[i];
+                var days = plans[price];
+                var title = days == 1 ? "1 Day" : days + " Days";
+                var selected = i === 0 ? 'selected' : '';
+                var checked = i === 0 ? 'checked' : '';
+                html += '<label class="plan-option ' + selected + '">' +
+                    '<input type="radio" name="amount" value="' + price + '" ' + checked + '>' +
+                    '<div class="plan-title">' + title + '</div>' +
+                    '<div class="plan-price">₹' + price + '</div>' +
+                '</label>';
+            }
+            container.innerHTML = html;
+
+            document.querySelectorAll('.plan-option').forEach(function(opt) {
+                opt.addEventListener('click', function() {
+                    document.querySelectorAll('.plan-option').forEach(function(o) { o.classList.remove('selected'); });
+                    this.classList.add('selected');
+                    this.querySelector('input[type="radio"]').checked = true;
+                });
+            });
+        }
+
+        document.getElementById('backToAppsBtn')?.addEventListener('click', function() {
+            document.getElementById('payForm').style.display = 'none';
+            document.getElementById('appSection').style.display = 'block';
         });
 
         document.getElementById('payForm').addEventListener('submit', function() {
