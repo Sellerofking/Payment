@@ -215,7 +215,6 @@ function renderAppSelectionHtml(apps) {
         </p>
         <div class="app-grid">${cards}</div>
     </div>
-    <input type="hidden" name="soft_id" id="softIdInput" value="">
     `;
 }
 
@@ -342,6 +341,7 @@ function renderIndexHtml(errorMsg = null) {
         ${appSelectionHtml}
 
         <form method="POST" action="/" id="payForm">
+            <input type="hidden" name="soft_id" id="softIdInput" value="">
             <button type="button" class="back-btn" id="backToAppsBtn" style="display:none;">
                 <i class="fas fa-arrow-left"></i> Change App
             </button>
