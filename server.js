@@ -201,7 +201,7 @@ app.get('/success', async (req, res) => {
 // ==========================================
 // EXACT HTML/CSS UI TEMPLATES
 // ==========================================
-function renderAppSelectionHtml(apps) {
+function renderAppSelectionHtml(apps, show = false) {
     let cards = apps.map((app, i) => `
         <div class="app-card" data-index="${i}">
             <div class="app-icon"><i class="fas fa-cube"></i></div>
@@ -211,7 +211,7 @@ function renderAppSelectionHtml(apps) {
     `).join('');
 
     return `
-    <div id="appSection" style="display:none;" class="app-section">
+    <div id="appSection" style="display:${show ? 'block' : 'none'};" class="app-section">
         <p style="font-size: 13px; color: #8a95a5; margin-bottom: 15px; font-weight: 500; text-transform: uppercase; text-align:center;">
             <i class="fas fa-hand-point-down"></i>  Choose Your Attendance App  <i class="fas fa-hand-point-down"></i>
         </p>
@@ -236,10 +236,10 @@ function renderIndexHtml(errorMsg = null) {
         isFirst = false;
     }
 
-    let appSelectionHtml = renderAppSelectionHtml(APPS);
+    let appSelectionHtml = renderAppSelectionHtml(APPS, !!errorMsg);
 
     let introDisplay = errorMsg ? 'none' : 'flex';
-    let formDisplay = errorMsg ? 'block' : 'none';
+    let formDisplay = 'none';
 
     return `<!DOCTYPE html>
 <html lang="en">
